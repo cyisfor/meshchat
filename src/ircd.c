@@ -518,7 +518,8 @@ ircd_start(ircd_t *ircd) {
     hints.ai_protocol = 0;
     // rest 0
 
-    int status = getaddrinfo(NULL, "6999", &hints, &result);
+    const char* port = getenv("IRCD_PORT");
+    int status = getaddrinfo(NULL, port ? port : "6999", &hints, &result);
     if (status) {
         printf("getaddrinfo: ");
         puts(gai_strerror(status));

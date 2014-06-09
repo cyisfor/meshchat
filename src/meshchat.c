@@ -23,6 +23,7 @@
 #include "meshchat.h"
 #include "cjdnsadmin.h"
 #include "util.h"
+#include "ports.h"
 
 #define MESHCHAT_PORT 14627
 #define MESHCHAT_PACKETLEN 1400
@@ -161,6 +162,9 @@ void alloc_cb(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf) {
 
 void
 meshchat_start(meshchat_t *mc) {
+
+    ports_init(htons(MESHCHAT_PORT));
+
     // start the local IRC server
     ircd_start(mc->ircd);
 
@@ -262,6 +266,11 @@ handle_datagram(uv_udp_t* handle,
         fprintf(stderr, "Unable to handle message from peer %s: \"%s\"\n",
                 sprint_addrport(in), buf->base);
         return;
+    }
+    
+    // update the port (may be different from default/discovery port)
+    if (ports_changed(&peer->addr)) {
+        peer->addr.sin6_port = addr->sin6_port;
     }
 
     const char *channel;
@@ -394,8 +403,8 @@ peer_new(const char *ip) {
     strcpy(peer->ip, ip);
     memset(&peer->addr, 0, sizeof(peer->addr));
     peer->addr.sin6_family = AF_INET6;
-    peer->addr.sin6_port = htons(MESHCHAT_PORT);
     inet_pton(AF_INET6, ip, &(peer->addr.sin6_addr));
+    peer->addr.sin6_port = ports_lookup(&peer->addr.sin6_addr);
     return peer;
 }
 

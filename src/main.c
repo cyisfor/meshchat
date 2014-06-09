@@ -14,9 +14,7 @@
 #include <stdlib.h>
 #include <sys/time.h>
 
-int main()
-//int main(int argc, char *argv[])
-{
+static void startup(void) {
     meshchat_t *mc;
 
     mc = meshchat_new();
@@ -27,6 +25,14 @@ int main()
 
     // Start connecting stuff
     meshchat_start(mc);
+}
+
+int main()
+//int main(int argc, char *argv[])
+{
+    config_init();
+
+    config_chdir(startup);
 
     uv_run(uv_default_loop(),UV_RUN_DEFAULT);
 
