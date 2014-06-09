@@ -25,7 +25,11 @@ uint8_t ports_changed(const struct sockaddr_in6* peer) {
         if(port == peer->sin6_port)
             return 0;
     }
-    value.dptr = (char*) &peer->sin6_port;
-    gdbm_store(db, key, value, GDBM_REPLACE);
+    if(peer->sin6_port == defaultPort) {
+        gdbm_delete(db, key);
+    } else {
+        value.dptr = (char*) &peer->sin6_port;
+        gdbm_store(db, key, value, GDBM_REPLACE);
+    }
     return 1;
 }
