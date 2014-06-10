@@ -136,7 +136,12 @@ meshchat_t *meshchat_new() {
     }
 
     // todo: allow custom port/hostname
-    mc->port = MESHCHAT_PORT;
+    const char* port = getenv("MESHCHAT_PORT");
+    if(port) {
+        mc->port = atoi(port);
+    } else { 
+        mc->port = MESHCHAT_PORT;
+    }
     //mc->host = "::"; // wildcard
 
     return mc;
@@ -245,6 +250,16 @@ handle_datagram(uv_udp_t* handle,
         const uv_buf_t* buf,
         const struct sockaddr* in,
         unsigned flags) {
+
+    if(nread == 0) // libuv likes to warn us about EAGAIN/EWOULDBLOCK a lot.
+        return;
+
+    if(in == NULL) {
+        fprintf(stderr,"sourceless datagram? %s\n",buf->base);
+        return;
+    } else {
+        fprintf(stderr,"not sourceless %s\n",buf->base);
+    }
 
     meshchat_t *mc = handle->data;
     peer_t *peer;
