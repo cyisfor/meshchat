@@ -43,18 +43,9 @@ struct meshchat {
     char ip[INET6_ADDRSTRLEN];
     struct timespec last_peerfetch;
     struct timespec last_peerservice;
-    hash_t *peers;
+    struct peer_list* peers;
     char nick[MESHCHAT_NAME_LEN]; // our node's nick
     struct peer *me;
-};
-
-struct peer {
-    char ip[40];
-    struct sockaddr_in6 addr;
-    enum peer_status status;
-    struct timespec last_message;    // they sent to us
-    struct timespec last_greeted;    // we sent to them
-    char *nick;
 };
 
 enum event_type {
@@ -84,12 +75,12 @@ handle_datagram(uv_udp_t* handle,
         const struct sockaddr* in,
         unsigned flags);
 
-peer_t *get_peer(meshchat_t *mc, const char *ip);
+struct peer *get_peer(meshchat_t *mc, const char *ip);
 static void found_ip(void *obj, const char *ip);
 static void service_peers(uv_timer_t *timer);
-peer_t *peer_new(const char *ip);
-void peer_send(meshchat_t *mc, peer_t *peer, char *msg, size_t len);
-void greet_peer(meshchat_t *mc, peer_t *peer);
+struct peer *peer_new(const char *ip);
+void peer_send(meshchat_t *mc, struct peer *peer, char *msg, size_t len);
+void greet_peer(meshchat_t *mc, struct peer *peer);
 
 void on_irc_msg(void *obj, char *channel, char *data);
 void on_irc_notice(void *obj, char *channel, char *data);
@@ -104,7 +95,7 @@ meshchat_t *meshchat_new() {
         return NULL;
     }
 
-    mc->peers = hash_new();
+    mc->peers = peers_new();
     if (!mc->peers) {
         free(mc);
         return NULL;
@@ -151,7 +142,7 @@ void
 meshchat_free(meshchat_t *mc) {
     cjdnsadmin_free(mc->cjdnsadmin);
     ircd_free(mc->ircd);
-    hash_free(mc->peers);
+    peers_free(mc->peers);
     free(mc);
 }
 
@@ -167,8 +158,6 @@ void alloc_cb(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf) {
 
 void
 meshchat_start(meshchat_t *mc) {
-
-    ports_init(htons(MESHCHAT_PORT));
 
     // start the local IRC server
     ircd_start(mc->ircd);
@@ -204,16 +193,15 @@ meshchat_start(meshchat_t *mc) {
 
     addr6->sin6_port = htons(mc->port);
     //inet_pton(AF_INET6, mc->host, &addr->sin6_addr);
+    mc->me = peers_get(mc->peers, addr6);
 
-    const char *addrport = sprint_addrport(addr);
-    //strcpy(mc->addrport, sprint_addrport(addr));
     if (!inet_ntop(AF_INET6, &addr6->sin6_addr, mc->ip, INET6_ADDRSTRLEN)) {
         perror("inet_ntop");
     } else {
-        mc->me = get_peer(mc, mc->ip);
         ircd_set_hostname(mc->ircd, mc->ip);
     }
 
+    const char *addrport = sprint_addrport(addr);
     if (uv_udp_bind(&mc->handle, addr, UV_UDP_IPV6ONLY | UV_UDP_REUSEADDR) < 0) {
         perror("bind");
         printf("meshchat failed to bind to %s\n", addrport);
@@ -262,32 +250,18 @@ handle_datagram(uv_udp_t* handle,
     }
 
     meshchat_t *mc = handle->data;
-    peer_t *peer;
+    struct peer *peer;
 
-    if (!hash_size(mc->peers)) {
-        // got a message without peers. :(
-        return;
-    }
-    static char ip[INET6_ADDRSTRLEN];
+    // fine to get a message with no peers
+    // we'll just add this one!
 
-    // convert ip to string
-    struct sockaddr_in6 *addr = (struct sockaddr_in6 *)in;
-    if (!inet_ntop(AF_INET6, &(addr->sin6_addr), ip, INET6_ADDRSTRLEN)) {
-        perror("inet_ntop");
-        return;
-    }
-    peer = get_peer(mc, ip);
+    peer = peers_get(mc->peers, addr);
     if (!peer) {
         fprintf(stderr, "Unable to handle message from peer %s: \"%s\"\n",
                 sprint_addrport(in), buf->base);
         return;
     }
     
-    // update the port (may be different from default/discovery port)
-    if (ports_changed(&peer->addr)) {
-        peer->addr.sin6_port = addr->sin6_port;
-    }
-
     const char *channel;
     if (peer->status != PEER_ACTIVE) {
         //printf("Peer woke up: %s\n", peer->ip);
@@ -367,12 +341,14 @@ handle_datagram(uv_udp_t* handle,
             printf("%s nick: %s\n", sprint_addrport(in), msg);
             break;
     };
+
+    peers_update(mc->peers, peer); 
 }
 
 // lookup a peer by ip, adding it if it is new
-peer_t *
+struct peer *
 get_peer(meshchat_t *mc, const char *ip) {
-    peer_t *peer;
+    struct peer *peer;
     static char ip_copy[INET6_ADDRSTRLEN];
 
     // canonicalize the ipv6 string
@@ -402,25 +378,12 @@ get_peer(meshchat_t *mc, const char *ip) {
 void
 found_ip(void *obj, const char *ip) {
     meshchat_t *mc = (meshchat_t *)obj;
-    get_peer(mc, ip);
-}
-
-peer_t *
-peer_new(const char *ip) {
-    peer_t *peer = (peer_t *)malloc(sizeof(peer_t));
-    if (!peer) {
-        return NULL;
-    }
-    peer->status = PEER_UNKNOWN;
-    ZERO(peer->last_greeted);
-    ZERO(peer->last_message);
-    peer->nick = NULL;
-    strcpy(peer->ip, ip);
-    memset(&peer->addr, 0, sizeof(peer->addr));
-    peer->addr.sin6_family = AF_INET6;
-    inet_pton(AF_INET6, ip, &(peer->addr.sin6_addr));
-    peer->addr.sin6_port = ports_lookup(&peer->addr.sin6_addr);
-    return peer;
+    struct sockaddr_in6 addr = {};
+    inet_pton(AF_INET6, ip, &addr.sin6_addr);
+    addr.sin6_port = MESHCHAT_PORT; 
+    // no way to tell if this peer uses a weird port,
+    // or if it uses meshchat at all!
+    peers_get(mc->peers, addr);
 }
 
 void on_sent(uv_udp_send_t* sent, int status) {
@@ -431,7 +394,7 @@ void on_sent(uv_udp_send_t* sent, int status) {
 }
 
 void
-peer_send(meshchat_t *mc, peer_t *peer, char *msg, size_t len) {
+peer_send(meshchat_t *mc, struct peer *peer, char *msg, size_t len) {
     // probably need a uv_udp_send_t for each send, so can send to multiple peers
     // without getting addresses mixed up? XXX: maybe not?
     
@@ -443,7 +406,7 @@ peer_send(meshchat_t *mc, peer_t *peer, char *msg, size_t len) {
 }
 
 static inline void
-service_peer(meshchat_t *mc, peer_t *peer) {
+service_peer(meshchat_t *mc, struct peer *peer) {
     if (peer == mc->me) {
         return;
     }
@@ -485,7 +448,7 @@ service_peer(meshchat_t *mc, peer_t *peer) {
 }
 
 static inline void
-broadcast_all_peer(meshchat_t *mc, peer_t *peer, char *msg, size_t len) {
+broadcast_all_peer(meshchat_t *mc, struct peer *peer, char *msg, size_t len) {
     // send only to active peer
     if (peer->status == PEER_ACTIVE) {
         peer_send(mc, peer, msg, len);
@@ -515,7 +478,7 @@ service_peers(uv_timer_t* handle) {
 }
 
 void
-greet_peer(meshchat_t *mc, peer_t *peer) {
+greet_peer(meshchat_t *mc, struct peer *peer) {
     static char msg[MESHCHAT_PACKETLEN];
     size_t len = 1;
     //printf("greeting peer %s\n", peer->ip);
