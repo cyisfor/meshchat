@@ -17,13 +17,7 @@
 typedef struct meshchat meshchat_t;
 typedef struct peer peer_t;
 
-enum peer_status {
-    PEER_UNKNOWN,   // we haven't contacted them
-    PEER_CONTACTED, // we have sent a greeting
-    PEER_ACTIVE,    // they have sent us a greeting recently
-    PEER_INACTIVE, // they have not sent us a greeting recently
-};
-
+/*@null@*/
 meshchat_t *meshchat_new();
 
 void meshchat_free(meshchat_t *mc);

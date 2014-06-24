@@ -1,101 +1,56 @@
 #include "peers.h"
+#include "logging.h"
 
-#include <hash/khash.h>
+#include <arpa/inet.h>
 
-struct peer {
-    char ip[40];
-    struct sockaddr_in6 addr;
-    enum peer_status status;
-    struct timespec last_message;    // they sent to us
-    struct timespec last_greeted;    // we sent to them
-    char *nick;
+
+struct private_peer {
+    struct peer public;
+    /* meh */
 };
 
 struct peer *
 peer_new(const struct sockaddr_in6* addr) {
-    struct peer *peer = (struct peer *)malloc(sizeof(struct peer));
-    if (!peer) {
+    struct private_peer *ppeer = (struct private_peer *)calloc(1,sizeof(struct private_peer));
+    if (!ppeer) {
         return NULL;
     }
+    struct peer* peer = &ppeer->public;
     peer->status = PEER_UNKNOWN;
-    ZERO(peer->last_greeted);
-    ZERO(peer->last_message);
-    peer->nick = NULL;
-    strcpy(peer->ip, ip);
-    memcpy(peer->addr,addr,sizeof(*addr));
+    inet_ntop(AF_INET6, &(addr->sin6_addr),peer->ip,INET6_ADDRSTRLEN);
+    memcpy(&peer->addr,addr,sizeof(*addr));
     return peer;
 }
 
-static inline khint_t hash_addr(const struct sockaddr_in6* addr) {
-    int i;
-    struct in6_addr* ip = addr->sin6_addr;
-    khint_t* parts = ip->in6_u.u6_addr32;
-    khint_t h = parts[0];
-    for(i=1;i<sizeof(ip->in6_u.u6_addr32);++i) {
-        h = (h <<5) - h + parts[i];
-    }
-    h = (h << 5) - h + addr->sin6_port;
-    return h;
-}
-
-static inline equal_addr(const struct sockaddr_in6* a, const struct sockaddr_in6* b) {
-    return 0 == memcmp(a,b,sizeof(a));
-}
-
-KHASH_INIT(zoop, const struct sockaddr_in6*, struct peer*, 1, hash_addr, equal_addr);
-
-struct peers {
-    khash_t(zoop) list;
+struct private_peer_list {
+    peer_list list;
     uint8_t dirty;
 };
 
 
-struct peers* peers_init(void) {
-    struct peers* self = calloc(1,sizeof(struct peers));
+peer_list* peers_init(void) {
+    peer_list* self = calloc(1,sizeof(struct private_peer_list));
     return self;
 }
 
-void peers_free(struct peers** self) {
-    struct peers* doomed = *self;
+void peers_free(peer_list** self) {
+    peer_list* doomed = *self;
     *self = NULL;
-    kh_destroy(zoop,doomed);
+    kh_destroy(peer,doomed);
 }
 
-struct peer* peers_lookup(struct peers* peers, const struct sockaddr_in6* addr) {
-    khash_t(zoop)* list = (khash_t(zoop)*)peers; 
-    // make it ->list if need any other info about all peers
-
-    khiter_t k = kh_get(zoop, list, addr);
-    if(k == kh_end(list)) {
+struct peer* peers_lookup(peer_list* peers, const struct sockaddr_in6* addr) {
+    khiter_t k = kh_get(peer, peers, addr);
+    if(k == kh_end(peers)) {
+        int ret = 0;
         struct peer* peer = peer_new(addr);
-        k = kh_put(zoop, list, addr, &ret);
+        k = kh_put(peer, peers, addr, &ret);
         if(ret) {
-            perror("kh_get returns no result, but kh_put indicates there is one???\n");
-            exit(3);
+            die("kh_get returns no result, but kh_put indicates there is one???\n");
         }
-        kh_value(list, k) = peer;
+        kh_value(peers, k) = peer;
         return peer;
     } else {
-        return kh_value(list, k);
+        return kh_value(peers, k);
     }
 }
-
-struct peer *
-peer_new(const char *ip) {
-    struct peer *peer = (struct peer *)malloc(sizeof(struct peer));
-    if (!peer) {
-        return NULL;
-    }
-    peer->status = PEER_UNKNOWN;
-    ZERO(peer->last_greeted);
-    ZERO(peer->last_message);
-    peer->nick = NULL;
-    strcpy(peer->ip, ip);
-    memset(&peer->addr, 0, sizeof(peer->addr));
-    peer->addr.sin6_family = AF_INET6;
-    inet_pton(AF_INET6, ip, &(peer->addr.sin6_addr));
-    peer->addr.sin6_port = ports_lookup(&peer->addr.sin6_addr);
-    return peer;
-}
-
-

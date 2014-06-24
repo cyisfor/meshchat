@@ -3,6 +3,12 @@
  * meshchat.c
  */
 
+#include "ircd.h"
+#include "meshchat.h"
+#include "cjdnsadmin.h"
+#include "util.h"
+#include "peers.h"
+
 #include <uv.h>
 
 #include <stdlib.h>
@@ -18,12 +24,7 @@
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <time.h>
-#include "ircd.h"
-#include "hash/hash.h"
-#include "meshchat.h"
-#include "cjdnsadmin.h"
-#include "util.h"
-#include "ports.h"
+#include <assert.h>
 
 #define MESHCHAT_PORT 14627
 #define MESHCHAT_PACKETLEN 1400
@@ -36,14 +37,13 @@
 struct meshchat {
     ircd_t *ircd;
     cjdnsadmin_t *cjdnsadmin;
-    //const char *host;
     int port;
     uv_udp_t handle;
     void* buffer;
     char ip[INET6_ADDRSTRLEN];
     struct timespec last_peerfetch;
     struct timespec last_peerservice;
-    struct peer_list* peers;
+    peer_list* peers;
     char nick[MESHCHAT_NAME_LEN]; // our node's nick
     struct peer *me;
 };
@@ -58,7 +58,7 @@ enum event_type {
 };
 
 const char *event_names[] = {
-    NULL,
+    "",
     "greeting",
     "msg",
     "action",
@@ -75,7 +75,6 @@ handle_datagram(uv_udp_t* handle,
         const struct sockaddr* in,
         unsigned flags);
 
-struct peer *get_peer(meshchat_t *mc, const char *ip);
 static void found_ip(void *obj, const char *ip);
 static void service_peers(uv_timer_t *timer);
 struct peer *peer_new(const char *ip);
@@ -95,7 +94,7 @@ meshchat_t *meshchat_new() {
         return NULL;
     }
 
-    mc->peers = peers_new();
+    mc->peers = peers_init();
     if (!mc->peers) {
         free(mc);
         return NULL;
@@ -142,7 +141,7 @@ void
 meshchat_free(meshchat_t *mc) {
     cjdnsadmin_free(mc->cjdnsadmin);
     ircd_free(mc->ircd);
-    peers_free(mc->peers);
+    peers_free(&mc->peers);
     free(mc);
 }
 
@@ -193,7 +192,7 @@ meshchat_start(meshchat_t *mc) {
 
     addr6->sin6_port = htons(mc->port);
     //inet_pton(AF_INET6, mc->host, &addr->sin6_addr);
-    mc->me = peers_get(mc->peers, addr6);
+    mc->me = peers_lookup(mc->peers, addr6);
 
     if (!inet_ntop(AF_INET6, &addr6->sin6_addr, mc->ip, INET6_ADDRSTRLEN)) {
         perror("inet_ntop");
@@ -236,13 +235,13 @@ static void
 handle_datagram(uv_udp_t* handle,
         ssize_t nread,
         const uv_buf_t* buf,
-        const struct sockaddr* in,
+        const struct sockaddr* addr,
         unsigned flags) {
 
     if(nread == 0) // libuv likes to warn us about EAGAIN/EWOULDBLOCK a lot.
         return;
 
-    if(in == NULL) {
+    if(addr == NULL) {
         fprintf(stderr,"sourceless datagram? %s\n",buf->base);
         return;
     } else {
@@ -254,11 +253,11 @@ handle_datagram(uv_udp_t* handle,
 
     // fine to get a message with no peers
     // we'll just add this one!
-
-    peer = peers_get(mc->peers, addr);
+    assert(addr->sa_family == AF_INET6);
+    peer = peers_lookup(mc->peers, (struct sockaddr_in6*) addr);
     if (!peer) {
         fprintf(stderr, "Unable to handle message from peer %s: \"%s\"\n",
-                sprint_addrport(in), buf->base);
+                sprint_addrport(addr), buf->base);
         return;
     }
     
@@ -280,7 +279,7 @@ handle_datagram(uv_udp_t* handle,
     switch(*(msg++)) {
         case EVENT_GREETING:
             // nick,channel...
-            //printf("got greeting from %s: \"%s\"\n", sprint_addrport(in), msg);
+            //printf("got greeting from %s: \"%s\"\n", sprint_addrport(addr), msg);
 
             // note their nick
             ;
@@ -319,71 +318,43 @@ handle_datagram(uv_udp_t* handle,
         case EVENT_NOTICE:
             channel = msg;
             msg += strlen(channel)+1;
-            printf("[%s] <%s> ! \"%s\"\n", channel, sprint_addrport(in), msg);
+            printf("[%s] <%s> ! \"%s\"\n", channel, sprint_addrport(addr), msg);
             ircd_notice(mc->ircd, &prefix, channel, msg);
             break;
         case EVENT_JOIN:
             // channel
             channel = msg;
-            printf("[%s] <%s joined>\n", channel, sprint_addrport(in));
+            printf("[%s] <%s joined>\n", channel, sprint_addrport(addr));
             ircd_join(mc->ircd, &prefix, channel);
             break;
         case EVENT_PART:
             // channel
             channel = msg;
             msg += strlen(channel)+1;
-            printf("[%s] <%s parted> (%s)\n", channel, sprint_addrport(in), msg);
+            printf("[%s] <%s parted> (%s)\n", channel, sprint_addrport(addr), msg);
             ircd_part(mc->ircd, &prefix, channel, NULL);
             break;
         case EVENT_NICK:
             ircd_nick(mc->ircd, &prefix, msg);
             peer->nick = strdup(msg);
-            printf("%s nick: %s\n", sprint_addrport(in), msg);
+            printf("%s nick: %s\n", sprint_addrport(addr), msg);
             break;
     };
 
-    peers_update(mc->peers, peer); 
-}
-
-// lookup a peer by ip, adding it if it is new
-struct peer *
-get_peer(meshchat_t *mc, const char *ip) {
-    struct peer *peer;
-    static char ip_copy[INET6_ADDRSTRLEN];
-
-    // canonicalize the ipv6 string
-    if (!canonicalize_ipv6(ip_copy, ip)) {
-        fprintf(stderr, "Failed to canonicalize ip %s\n", ip);
-    }
-
-    //printf("ip: %s, peers: %u\n", ip_copy, hash_size(mc->peers));
-    if (hash_size(mc->peers)) {
-        peer = hash_get(mc->peers, (char *)ip_copy);
-        if (peer) {
-            // we have already seen this ip
-            return peer;
-        }
-    }
-
-    // new peer. add to the list
-    peer = peer_new(ip_copy);
-    if (!peer) {
-        fprintf(stderr, "Unable to create peer\n");
-        return NULL;
-    }
-    hash_set(mc->peers, peer->ip, (void *)peer);
-    return peer;
+    //db_queue_update(db, peer); 
 }
 
 void
 found_ip(void *obj, const char *ip) {
     meshchat_t *mc = (meshchat_t *)obj;
-    struct sockaddr_in6 addr = {};
+    struct sockaddr_in6 addr;
+    memset(&addr,0,sizeof(addr));
     inet_pton(AF_INET6, ip, &addr.sin6_addr);
-    addr.sin6_port = MESHCHAT_PORT; 
     // no way to tell if this peer uses a weird port,
     // or if it uses meshchat at all!
-    peers_get(mc->peers, addr);
+    // so just use the MESHCHAT_PORT default
+    addr.sin6_port = MESHCHAT_PORT; 
+    peers_lookup(mc->peers, &addr);
 }
 
 void on_sent(uv_udp_send_t* sent, int status) {
@@ -459,7 +430,7 @@ broadcast_all_peer(meshchat_t *mc, struct peer *peer, char *msg, size_t len) {
 // send a message to all active peers
 void
 broadcast_all(meshchat_t *mc, char *msg, size_t len) {
-    hash_each_val(mc->peers, broadcast_all_peer(mc, val, msg, len));
+    peers_each(mc->peers, broadcast_all_peer(mc, val, msg, len));
 }
 
 // send a message to all active peers in a channel
@@ -474,7 +445,7 @@ void
 service_peers(uv_timer_t* handle) {
     meshchat_t *mc = handle->data;
     //printf("servicing peers (%u)\n", hash_size(mc->peers));
-    hash_each_val(mc->peers, service_peer(mc, val));
+    peers_each(mc->peers, service_peer(mc, val));
 }
 
 void

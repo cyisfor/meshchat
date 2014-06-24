@@ -14,6 +14,14 @@ else
 LDFLAGS += -luv
 endif
 
+OBJ += deps/tokyocabinet/git/libtokyocabinet.so
+
+deps/tokyocabinet/git/Makefile: deps/tokyocabinet/git/configure
+	cd deps/tokyocabinet/git && ./configure --enable-fastest
+
+deps/tokyocabinet/git/libtokyocabinet.so: deps/tokyocabinet/git/Makefile
+	$(MAKE) -C deps/tokyocabinet/git libtokyocabinet.so
+
 $(BIN):: $(OBJ)
 	${CC} -o $@ $^ ${LDFLAGS}
 
@@ -28,6 +36,7 @@ uninstall:
 
 clean:
 	rm -f $(BIN) $(OBJ)
+	[ -d deps/tokyocabinet/git ] && make -C deps/tokyocabinet/git clean
 
 .PHONY: all install uninstall
 
