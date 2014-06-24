@@ -2,25 +2,19 @@ BIN = meshchat
 SRC = $(wildcard src/*.c)
 SRC += $(wildcard deps/*/*.c)
 OBJ = $(SRC:.c=.o)
-CFLAGS += -Ideps -Wall -pedantic
+CFLAGS += -Ideps -Wall -pedantic -g
 CFLAGS += -std=gnu99
 
-all: $(BIN)
+all:: $(BIN)
 
 ifdef INTERNAL_LIBUV
 CFLAGS += -Ideps/libuv/include
-LDFLAGS += deps/libuv/.libs/libuv.a -lc -lpthread
+LDFLAGS += deps/libuv/.libs/libuv.a -lc -lpthread -g
 else
-LDFLAGS += -luv
+LDFLAGS += -luv -g
 endif
 
-OBJ += deps/tokyocabinet/git/libtokyocabinet.so
-
-deps/tokyocabinet/git/Makefile: deps/tokyocabinet/git/configure
-	cd deps/tokyocabinet/git && ./configure --enable-fastest
-
-deps/tokyocabinet/git/libtokyocabinet.so: deps/tokyocabinet/git/Makefile
-	$(MAKE) -C deps/tokyocabinet/git libtokyocabinet.so
+-include src/peerdb/Makefile
 
 $(BIN):: $(OBJ)
 	${CC} -o $@ $^ ${LDFLAGS}
@@ -34,9 +28,8 @@ install: all
 uninstall:
 	rm -f ${DESTDIR}${BINDIR}/${BIN}
 
-clean:
+clean::
 	rm -f $(BIN) $(OBJ)
-	[ -d deps/tokyocabinet/git ] && make -C deps/tokyocabinet/git clean
 
 .PHONY: all install uninstall
 

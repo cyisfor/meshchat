@@ -1,0 +1,26 @@
+A simple key/value database for remembering peers we discovered last time.
+Separate process because database is complicated and threads are hard.
+
+protocol:
+=> byte, data
+<= reply
+
+network byte order everywhere
+
+key = last_message (4 bytes)
+peer = address (8 bytes), port (2 bytes)
+
+should the peer also have a last_greeted and status? the above is neccesary, but is it sufficient?
+
+peers are stored in order of last_message (most recent first)
+
+to get recent peers:
+byte = 0
+value = number of peers (2 bytes) + peer + peer + ... + peer
+
+to set a peer last_message:
+byte = 1
+data = key (4 bytes) + peer (10 bytes)
+reply = none. if it fails, oh well.
+
+On its own the database removes peers that get too old, retaining the most recent ones. Logic should be like, whenever a new peer is created, if too many peers in the db, remove the oldest. The db should not return all peers when asked for recent ones, but instead a smaller maximum amount.

@@ -3,7 +3,6 @@
 
 #include <arpa/inet.h>
 
-
 struct private_peer {
     struct peer public;
     /* meh */
@@ -45,7 +44,7 @@ struct peer* peers_lookup(peer_list* peers, const struct sockaddr_in6* addr) {
         int ret = 0;
         struct peer* peer = peer_new(addr);
         k = kh_put(peer, peers, addr, &ret);
-        if(ret) {
+        if(ret != 1) {
             die("kh_get returns no result, but kh_put indicates there is one???\n");
         }
         kh_value(peers, k) = peer;

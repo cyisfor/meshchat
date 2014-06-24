@@ -1,3 +1,6 @@
+#ifndef PEERS_H
+#define PEERS_H
+
 #include "hash/khash.h"
 #include <netinet/ip6.h>
 
@@ -55,3 +58,5 @@ void peer_ip(struct peer* peer, char ip[]);
       block; \
     } \
   }
+
+#endif /* PEERS_H */

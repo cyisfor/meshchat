@@ -8,6 +8,7 @@
 #include "cjdnsadmin.h"
 #include "util.h"
 #include "peers.h"
+#include "peerdb/interface.h"
 
 #include <uv.h>
 
@@ -99,6 +100,8 @@ meshchat_t *meshchat_new() {
         free(mc);
         return NULL;
     }
+
+    peerdb_startup(mc->peers);
 
     mc->cjdnsadmin = cjdnsadmin_new();
     if (!mc->cjdnsadmin) {
@@ -341,7 +344,7 @@ handle_datagram(uv_udp_t* handle,
             break;
     };
 
-    //db_queue_update(db, peer); 
+    peerdb_observe(peer);
 }
 
 void
