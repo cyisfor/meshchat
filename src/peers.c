@@ -39,13 +39,14 @@ void peers_free(peer_list** self) {
 }
 
 struct peer* peers_lookup(peer_list* peers, const struct sockaddr_in6* addr) {
+    warn("key %s",sprint_addrport(addr));
     khiter_t k = kh_get(peer, peers, addr);
     if(k == kh_end(peers)) {
         int ret = 0;
         struct peer* peer = peer_new(addr);
         k = kh_put(peer, peers, addr, &ret);
         if(ret != 1) {
-            die("kh_get returns no result, but kh_put indicates there is one???\n");
+            warn("kh_get returns no result, but kh_put indicates there is one??? %d",ret);
         }
         kh_value(peers, k) = peer;
         return peer;

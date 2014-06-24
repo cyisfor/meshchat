@@ -1,6 +1,7 @@
 /* vim: set expandtab ts=4 sw=4: */
 
 #include "util.h"
+#include "logging.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,24 +40,31 @@ sprint_addrport(const struct sockaddr *in)
     buffer[0] = '[';
     uint16_t port = 0;
 
-    struct sockaddr_in6 *addr = (struct sockaddr_in6 *)in;
-    if (addr->sin6_family == AF_INET) {
+    if (in->sa_family == AF_INET) {
         struct sockaddr_in *addr4 = (struct sockaddr_in *)in;
         if (!inet_ntop(AF_INET, &(addr4->sin_addr), buffer, INET_ADDRSTRLEN)) {
             perror("inet_ntop");
             buffer[0] = '\0';
         }
         port = addr4->sin_port;
-    } else {
+    } else if (in->sa_family == AF_INET6) {
+        struct sockaddr_in6 *addr = (struct sockaddr_in6 *)in;
         if (!inet_ntop(AF_INET6, &(addr->sin6_addr), buffer6, INET6_ADDRSTRLEN)) {
             perror("inet_ntop");
             buffer6[0] = '\0';
         }
         port = addr->sin6_port;
+    } else {
+        struct sockaddr_in6* addr = (struct sockaddr_in6 *)in;
+        warn("Wait, what family is this?? %d %d\n",in->sa_family,addr->sin6_family);
+        buffer[0] = '?';
+        buffer[1] = '?';
+        buffer[2] = '?';
+        buffer[3] = 0;
     }
 
     int len = strlen(buffer);
-    if (addr->sin6_family == AF_INET6) {
+    if (in->sa_family == AF_INET6) {
         buffer[len] = ']';
         len++;
     }

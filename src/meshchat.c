@@ -356,7 +356,8 @@ found_ip(void *obj, const char *ip) {
     // no way to tell if this peer uses a weird port,
     // or if it uses meshchat at all!
     // so just use the MESHCHAT_PORT default
-    addr.sin6_port = MESHCHAT_PORT; 
+    addr.sin6_port = htons(MESHCHAT_PORT); 
+    addr.sin6_family = AF_INET6; // derp
     peers_lookup(mc->peers, &addr);
 }
 

@@ -3,6 +3,7 @@
 #endif
 
 #include "peers.h"
+#include "logging.h"
 
 #include <uv.h>
 
@@ -37,7 +38,8 @@ static void alloc_buffer(uv_handle_t* handle, size_t suggestion, uv_buf_t* buf) 
 
 static void on_read(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf) {
     if(nread < 0) {
-        die(uv_strerror(nread));
+        if(nread == UV_EOF) return;
+        die("Reading failed %s\n",uv_strerror(nread));
     }
     struct context* ctx = (struct context*) stream->data;
 
@@ -110,7 +112,10 @@ static void restart(void) {
     watch_reader();
 }
 
+uint32_t writers = 0;
+
 static void freereq(uv_write_t* req, int status) {
+    --writers;
     free(req);
 }
 
@@ -119,6 +124,7 @@ static void getLatest(void) {
     uv_buf_t buf;
     buf.base = &type;
     buf.len = 1;
+    ++writers;
     uv_write(malloc(sizeof(uv_write_t)), (uv_stream_t*)&writer, &buf, 1, freereq);
 }
 
@@ -140,6 +146,10 @@ void peerdb_startup(peer_list* p) {
 }
 
 void peerdb_observe(struct peer* peer) {
+    if(writers > 0x100) {
+        // save some cycles not overloading the db
+        return;
+    }
     // type (1) key (4), ip (8), port (2)
     uint8_t base[1+4+8+2];
     base[0] = 1;
@@ -155,22 +165,6 @@ void peerdb_observe(struct peer* peer) {
     uv_buf_t message;
     message.base = (char*)base;
     message.len = 1+4+8+2;
+    ++writers;
     uv_write(malloc(sizeof(uv_write_t)), (uv_stream_t*)&writer, &message, 1, freereq);
-
-    /* XXX: might want the write callback? The only reason to use it would be:
-     * 1) too many peerdb observes, write queue for writer fills up
-     * ^^^^ THIS IS ACTUALLY VERY DIFFICULT TO DO
-     * 2) disable writing, no observing peers anymore
-     * 3) set a counter for how many pending writes
-     * 4) decrement counter in write callback
-     * 5) re-enable when counter is low enough
-     *
-     * Orr the easier way:
-     * 1) too many etc, write queue fills up
-     * 2) keep writin anyway, ignore failures
-     * ^^^^ this is effectively like not observing at all
-     * 3) when write queue is empty enough, uv_write stops failing
-     * ^^^^ this is effectively like re-enabling when the counter is low
-     * 4) cry b/c we did all that memcpy and lose 3 nanoseconds every failed write
-     */
 }
