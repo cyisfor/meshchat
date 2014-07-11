@@ -23,7 +23,7 @@ int canonicalize_ipv6(char *dest, const char *src);
 
 #define GETDATA(type,name,handle) type* name = (type*) handle->data
 
-#define CHECK(status) if(status < 0) { fprintf(stderr,"error: %s %s\n",uv_strerror(status),uv_err_name(status)); exit(23); }
+#define CHECK(status) if(status < 0) { fprintf(stderr,"error: %s %s (%s:%d)\n",uv_strerror(status),uv_err_name(status),__FILE__,__LINE__); exit(23); }
 
 #endif /* UTIL_H */
 

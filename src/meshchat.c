@@ -24,6 +24,8 @@
 #include "cjdnsadmin.h"
 #include "util.h"
 
+#include <stdbool.h>
+
 #define MESHCHAT_PORT 14627
 #define MESHCHAT_PACKETLEN 1400
 #define MESHCHAT_PEERFETCH_INTERVAL 600
@@ -31,6 +33,10 @@
 #define MESHCHAT_TIMEOUT 60
 #define MESHCHAT_PING_INTERVAL 20
 #define MESHCHAT_RETRY_INTERVAL 900
+
+/* how often to attempt to restart operations during 
+ * (uncomfortably frequent) network failures? */
+#define MESHCHAT_RESTART_INTERVAL 2
 
 struct meshchat {
     ircd_t *ircd;
@@ -159,6 +165,8 @@ void alloc_cb(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf) {
     buf->len = suggested_size;
 }
 
+static bool rawStartup(meshchat_t *mc);
+
 void
 meshchat_start(meshchat_t *mc) {
     // start the local IRC server
@@ -168,6 +176,30 @@ meshchat_start(meshchat_t *mc) {
     cjdnsadmin_start(mc->cjdnsadmin);
 
     uv_udp_init(uv_default_loop(),&mc->handle);
+    mc->handle.data = mc;
+
+    if (rawStartup(mc) == false) {
+        exit(1);
+    }
+
+    // periodically fetch list of peers to ping
+    uv_timer_t* timer = malloc(sizeof(uv_timer_t));
+    timer->data = mc->cjdnsadmin;
+    uv_timer_init(uv_default_loop(),timer);
+    uv_timer_start(timer, fetch_peers, 
+            0, 1000 * MESHCHAT_PEERFETCH_INTERVAL);
+
+    // never stopping the timer, so forget about freeing it.
+
+    timer = malloc(sizeof(uv_timer_t));
+    timer->data = mc;
+    uv_timer_init(uv_default_loop(),timer);
+    uv_timer_start(timer,service_peers,
+            0 , 1000 * MESHCHAT_PEERSERVICE_INTERVAL);
+
+}
+
+static bool rawStartup(meshchat_t *mc) {
 
     struct sockaddr *addr = NULL;
     struct sockaddr_in6 *addr6 = NULL;
@@ -190,7 +222,7 @@ meshchat_start(meshchat_t *mc) {
 
     if (!ifa) {
         fprintf(stderr, "Unable to find a cjdns ip.\n");
-        exit(1);
+        return false;
     }
 
     addr6->sin6_port = htons(mc->port);
@@ -214,25 +246,47 @@ meshchat_start(meshchat_t *mc) {
 
     freeifaddrs(ifaddr);
 
-    // periodically fetch list of peers to ping
-    uv_timer_t* timer = malloc(sizeof(uv_timer_t));
-    timer->data = mc->cjdnsadmin;
-    uv_timer_init(uv_default_loop(),timer);
-    uv_timer_start(timer, fetch_peers, 
-            0, 1000 * MESHCHAT_PEERFETCH_INTERVAL);
-
-    // never stopping the timer, so forget about freeing it.
-
-    timer = malloc(sizeof(uv_timer_t));
-    timer->data = mc;
-    uv_timer_init(uv_default_loop(),timer);
-    uv_timer_start(timer,service_peers,
-            0 , 1000 * MESHCHAT_PEERSERVICE_INTERVAL);
-
-    mc->handle.data = mc;
-
     uv_udp_recv_start(&mc->handle, alloc_cb, handle_datagram);
     // handle_datagram(mc, (struct sockaddr *)&src_addr, buffer, count);
+    
+    return true;
+}
+
+static void tryStartup(uv_timer_t* timer) {
+    puts("Trying to bind to cjdns again...");
+    meshchat_t* mc = timer->data;
+    if(rawStartup(mc)) {
+        uv_timer_stop(timer);
+        free(timer);
+    }
+}
+
+static void startTryingStarting(uv_handle_t* data) {
+    uv_timer_t* timer = malloc(sizeof(uv_timer_t));
+    timer->data = data->data;
+    uv_timer_init(uv_default_loop(),timer);
+    uv_timer_start(timer,tryStartup,
+            0 , 1000 * MESHCHAT_RESTART_INTERVAL);
+}
+
+static void restartMaybeLater(meshchat_t* mc) {
+    /* restarting is tricky, but checking the libuv code...
+     * uv_close 
+     *    closes the socket
+     *    sets the socket to -1
+     *    empties the queues
+     *    cancels any pending send
+     *    removes alloc/read handlers
+     * uv_udp_init 
+     *    removes alloc/read handlers
+     *    initializes the queues (QUEUE_INIT seems harmless for a 0-element queue)
+     *    sets the socket to -1
+     * since uv_close (and uv__udp_close/uv__udp_finish_close) set the socket to -1
+     * and empty the queues, calling uv_udp_init again should be unnecessary.
+     *
+     * calling uv_udp_bind again will set the fd to the new socket.
+     */     
+    uv_close((uv_handle_t*)&mc->handle,startTryingStarting); 
 }
 
 static void
@@ -399,7 +453,37 @@ peer_new(const char *ip) {
     return peer;
 }
 
-void on_sent(uv_udp_send_t* sent, int status) {
+static void on_sent(uv_udp_send_t* sent, int status);
+
+struct sending {
+    uv_udp_send_t parent;
+    uv_buf_t buf;
+    uv_timer_t timer;
+    struct sockaddr* addr;
+    uv_udp_t* handle;
+};
+
+static void sendReq(struct sending* req) {
+    uv_udp_send((uv_udp_send_t*)req, req->handle, &req->buf, 1, req->addr, on_sent);
+}
+
+static void sendAgain(uv_timer_t* timer) {
+    sendReq(timer->data);
+}
+
+static void sendMaybeLater(struct sending* req) {
+    req->timer.data = req;
+    uv_timer_init(uv_default_loop(),&req->timer);
+    uv_timer_start(&req->timer, sendAgain,
+            1000 * MESHCHAT_RESTART_INTERVAL, 0);
+}
+
+static void on_sent(uv_udp_send_t* sent, int status) {
+    if(status == ENETUNREACH) {
+        sendMaybeLater((struct sending*)sent);
+        return;
+    }
+
     CHECK(status);
     //printf("sent \"%*s\" (%zu) to %s\n", (int)len-1, msg, len,
         //sprint_addrport((struct sockaddr *)&peer->addr));
@@ -411,11 +495,12 @@ peer_send(meshchat_t *mc, peer_t *peer, char *msg, size_t len) {
     // probably need a uv_udp_send_t for each send, so can send to multiple peers
     // without getting addresses mixed up? XXX: maybe not?
     
-    uv_udp_send_t* req = NEW(uv_udp_send_t);
-    uv_buf_t buf;
-    buf.base = msg;
-    buf.len = len;
-    uv_udp_send(req,&mc->handle, &buf, 1, (struct sockaddr *)&peer->addr, on_sent);
+    struct sending* req = NEW(struct sending);
+    req->buf.base = msg;
+    req->buf.len = len;
+    req->addr = (struct sockaddr*)&peer->addr;
+    req->handle = &mc->handle;
+    sendReq(req);
 }
 
 static inline void
